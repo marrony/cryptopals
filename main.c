@@ -19,6 +19,16 @@ typedef struct {
 
 #define EMPTY_BYTE_BUFFER (Byte_Buffer) { .ptr = NULL, .len = 0 }
 
+char* assert_bounds(Byte_Buffer b, size_t n, const char* file, int line) {
+  if (n >= b.len) {
+    fprintf(stderr, "%s:%d: Array index out of bounds. %zu >= %zu\n", file, line, n, b.len);
+    exit(1);
+  }
+  return b.ptr+n;
+}
+
+#define AT(b, n) *(assert_bounds((b), (n), __FILE__, __LINE__))
+
 struct Allocator;
 
 typedef Byte_Buffer (*Alloc_Fn)(struct Allocator*, size_t, const char*, size_t);
@@ -152,10 +162,10 @@ Byte_Buffer hex_to_bytes(Allocator* alloc, Byte_Buffer hex) {
     size_t out_size = 0;
 
     for (size_t i = 0; i < hex.len - 1; i += 2) {
-      char ch_hi = FROM_HEX(hex.ptr[i+0]);
-      char ch_lo = FROM_HEX(hex.ptr[i+1]);
+      char ch_hi = FROM_HEX(AT(hex, i+0));
+      char ch_lo = FROM_HEX(AT(hex, i+1));
 
-      buffer.ptr[out_size++] = (ch_hi << 4) | ch_lo;
+      AT(buffer, out_size++) = (ch_hi << 4) | ch_lo;
     }
   }
 
@@ -169,11 +179,11 @@ Byte_Buffer bytes_to_hex(Allocator* alloc, Byte_Buffer bytes) {
     size_t out_size = 0;
 
     for (size_t i = 0; i < bytes.len; i++) {
-      char ch_hi = bytes.ptr[i] >> 4;
-      char ch_lo = bytes.ptr[i] & 0xf;
+      char ch_hi = AT(bytes, i) >> 4;
+      char ch_lo = AT(bytes, i) & 0xf;
 
-      buffer.ptr[out_size++] = TO_HEX(ch_hi);
-      buffer.ptr[out_size++] = TO_HEX(ch_lo);
+      AT(buffer, out_size++) = TO_HEX(ch_hi);
+      AT(buffer, out_size++) = TO_HEX(ch_lo);
     }
   }
 
@@ -206,26 +216,26 @@ Byte_Buffer bytes_to_base64(Allocator* alloc, Byte_Buffer bytes) {
     size_t out_size = 0;
 
     for (size_t in = 0; in < bytes.len - 2; in += 3) {
-      int bits = ((int)bytes.ptr[in+0] << 16) | ((int)bytes.ptr[in+1] << 8) | (int)bytes.ptr[in+2];
+      int bits = ((int)AT(bytes, in+0) << 16) | ((int)AT(bytes, in+1) << 8) | (int)AT(bytes, in+2);
 
-      base64.ptr[out_size++] = base64_encode[(bits >> 18) & 0x3f];
-      base64.ptr[out_size++] = base64_encode[(bits >> 12) & 0x3f];
-      base64.ptr[out_size++] = base64_encode[(bits >> 6) & 0x3f];
-      base64.ptr[out_size++] = base64_encode[bits & 0x3f];
+      AT(base64, out_size++) = base64_encode[(bits >> 18) & 0x3f];
+      AT(base64, out_size++) = base64_encode[(bits >> 12) & 0x3f];
+      AT(base64, out_size++) = base64_encode[(bits >> 6) & 0x3f];
+      AT(base64, out_size++) = base64_encode[bits & 0x3f];
     }
 
     if (bytes.len % 3 == 2) {
-      int bits = ((int)bytes.ptr[bytes.len - 2] << 16) | ((int)bytes.ptr[bytes.len - 1] << 8);
+      int bits = ((int)AT(bytes, bytes.len - 2) << 16) | ((int)AT(bytes, bytes.len - 1) << 8);
 
-      base64.ptr[out_size++] = base64_encode[(bits >> 18) & 0x3f];
-      base64.ptr[out_size++] = base64_encode[(bits >> 12) & 0x3f];
+      AT(base64, out_size++) = base64_encode[(bits >> 18) & 0x3f];
+      AT(base64, out_size++) = base64_encode[(bits >> 12) & 0x3f];
     }
 
     if (bytes.len % 3 == 1) {
-      int bits = (int)bytes.ptr[bytes.len - 1] << 16;
+      int bits = (int)AT(bytes, bytes.len - 1) << 16;
 
-      base64.ptr[out_size++] = base64_encode[(bits >> 18) & 0x3f];
-      base64.ptr[out_size++] = base64_encode[(bits >> 12) & 0x3f];
+      AT(base64, out_size++) = base64_encode[(bits >> 18) & 0x3f];
+      AT(base64, out_size++) = base64_encode[(bits >> 12) & 0x3f];
     }
   }
 
@@ -277,7 +287,7 @@ Byte_Buffer base64_to_bytes(Allocator* alloc, Byte_Buffer base64) {
 
   size_t in_size = base64.len;
 
-  while (in_size > 0 && base64.ptr[in_size - 1] == '=')
+  while (in_size > 0 && AT(base64, in_size - 1) == '=')
     in_size--;
 
   size_t out_size = in_size * 6 / 8;
@@ -287,49 +297,49 @@ Byte_Buffer base64_to_bytes(Allocator* alloc, Byte_Buffer base64) {
   size_t bytes_index = 0;
 
   while (base64_index+3 < in_size) {
-    int i0 = base64_decode[(int)base64.ptr[base64_index++]];
-    int i1 = base64_decode[(int)base64.ptr[base64_index++]];
-    int i2 = base64_decode[(int)base64.ptr[base64_index++]];
-    int i3 = base64_decode[(int)base64.ptr[base64_index++]];
+    int i0 = base64_decode[(int)AT(base64, base64_index++)];
+    int i1 = base64_decode[(int)AT(base64, base64_index++)];
+    int i2 = base64_decode[(int)AT(base64, base64_index++)];
+    int i3 = base64_decode[(int)AT(base64, base64_index++)];
 
     int bits = (i0 << 18) | (i1 << 12) | (i2 << 6) | (i3 << 0);
 
-    bytes.ptr[bytes_index++] = (bits >> 16) & 0xff;
-    bytes.ptr[bytes_index++] = (bits >> 8) & 0xff;
-    bytes.ptr[bytes_index++] = (bits >> 0) & 0xff;
+    AT(bytes, bytes_index++) = (bits >> 16) & 0xff;
+    AT(bytes, bytes_index++) = (bits >> 8) & 0xff;
+    AT(bytes, bytes_index++) = (bits >> 0) & 0xff;
   }
 
   size_t diff = in_size - base64_index;
 
   if (diff == 3) {
     // |xxxxxxyy|yyyyzzzz|zz000000|
-    int i0 = base64_decode[(int)base64.ptr[base64_index+0]];
-    int i1 = base64_decode[(int)base64.ptr[base64_index+1]];
-    int i2 = base64_decode[(int)base64.ptr[base64_index+2]];
+    int i0 = base64_decode[(int)AT(base64, base64_index+0)];
+    int i1 = base64_decode[(int)AT(base64, base64_index+1)];
+    int i2 = base64_decode[(int)AT(base64, base64_index+2)];
 
     int bits = (i0 << 18) | (i1 << 12) | (i2 << 6);
     
-    bytes.ptr[bytes_index++] = (bits >> 16) & 0xff;
-    bytes.ptr[bytes_index++] = (bits >> 8) & 0xff;
+    AT(bytes, bytes_index++) = (bits >> 16) & 0xff;
+    AT(bytes, bytes_index++) = (bits >> 8) & 0xff;
   }
 
   if (diff == 2) {
     // |xxxxxxyy|yyyy0000|00000000|
-    int i0 = base64_decode[(int)base64.ptr[base64_index+0]];
-    int i1 = base64_decode[(int)base64.ptr[base64_index+1]];
+    int i0 = base64_decode[(int)AT(base64, base64_index+0)];
+    int i1 = base64_decode[(int)AT(base64, base64_index+1)];
 
     int bits = (i0 << 18) | (i1 << 12);
 
-    bytes.ptr[bytes_index++] = (bits >> 16) & 0xff;
+    AT(bytes, bytes_index++) = (bits >> 16) & 0xff;
   }
 
   if (diff == 1) {
     // |xxxxxx00|00000000|00000000|
-    int i0 = base64_decode[(int)base64.ptr[base64_index]];
+    int i0 = base64_decode[(int)AT(base64, base64_index)];
 
     int bits = (i0 << 18);
 
-    bytes.ptr[bytes_index++] = (bits >> 16) & 0xff;
+    AT(bytes, bytes_index++) = (bits >> 16) & 0xff;
   }
 
   return bytes;
@@ -360,7 +370,7 @@ Byte_Buffer fixed_xor(Allocator* alloc, Byte_Buffer bytes0, Byte_Buffer bytes1) 
   Byte_Buffer buffer = ALLOC(alloc, bytes0.len);
   if (buffer.ptr != NULL) {
     for (size_t i = 0; i < bytes0.len; i++) {
-      buffer.ptr[i] = bytes0.ptr[i] ^ bytes1.ptr[i];
+      AT(buffer, i) = AT(bytes0, i) ^ AT(bytes1, i);
     }
   }
 
@@ -394,7 +404,7 @@ bool find_xor_key(Byte_Buffer bytes, uint8_t* key_out, size_t* score_out) {
       size_t score = 0;
 
       for (size_t i = 0; i < bytes.len; i++) {
-        int index = tolower(bytes.ptr[i] ^ candidate);
+        int index = tolower(AT(bytes, i) ^ candidate);
         if (index < 0 || index > 255) {
           continue;
         }
@@ -423,7 +433,7 @@ Byte_Buffer single_key_xor(Allocator* alloc, Byte_Buffer plaintext, uint8_t key)
 
   if (buffer.ptr != NULL) {
     for (size_t i = 0; i < plaintext.len; i++) {
-      buffer.ptr[i] = plaintext.ptr[i] ^ key;
+      AT(buffer, i) = AT(plaintext, i) ^ key;
     }
   }
 
@@ -435,7 +445,7 @@ Byte_Buffer repeating_key_xor(Allocator* alloc, Byte_Buffer plaintext, Byte_Buff
 
   if (buffer.ptr != NULL) {
     for (size_t i = 0; i < plaintext.len; i++) {
-      buffer.ptr[i] = plaintext.ptr[i] ^ key.ptr[i % key.len];
+      AT(buffer, i) = AT(plaintext, i) ^ AT(key, i % key.len);
     }
   }
 
@@ -448,8 +458,8 @@ int hamming_distance(Byte_Buffer str0, Byte_Buffer str1) {
   int count = 0;
 
   for (size_t i = 0; i < str0.len; i++) {
-    if (str0.ptr[i] != str1.ptr[i])
-      count += __builtin_popcount(str0.ptr[i] ^ str1.ptr[i]);
+    if (AT(str0, i) != AT(str1, i))
+      count += __builtin_popcount(AT(str0, i) ^ AT(str1, i));
   }
 
   return count;
@@ -778,12 +788,12 @@ int main(void) {
 
       for (size_t i = 0; i < block.len; i++) {
         size_t index = i*key_size + key;
-        block.ptr[i] = bytes.ptr[index];
+        AT(block, i) = AT(bytes, index);
       }
 
       uint8_t xor_key;
       assert(find_xor_key(block, &xor_key, NULL));
-      key_block.ptr[key] = xor_key;
+      AT(key_block, key) = xor_key;
 
       arena.allocated = allocated;
     }
@@ -871,10 +881,10 @@ int main(void) {
       size_t duplicates = 0;
 
       for (size_t i = 0; i < bytes.len; i += 16) {
-        char* b0 = bytes.ptr + i;
+        char* b0 = &AT(bytes, i);
 
         for (size_t j = i + 16; j < bytes.len; j += 16) {
-          char* b1 = bytes.ptr + j;
+          char* b1 = &AT(bytes, j);
 
           if (memcmp(b0, b1, 16) == 0) {
             duplicates += 1;

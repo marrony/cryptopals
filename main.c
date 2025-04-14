@@ -19,6 +19,17 @@ typedef struct {
 
 #define EMPTY_BYTE_BUFFER (Byte_Buffer) { .ptr = NULL, .len = 0 }
 
+Byte_Buffer byte_buffer_slice(Byte_Buffer buffer, size_t offset, size_t len) {
+  assert(offset < buffer.len);
+
+  size_t end = offset + len;
+  if (end > buffer.len) {
+    len -= end - buffer.len;
+  }
+
+  return (Byte_Buffer) { .ptr = buffer.ptr + offset, .len = len };
+}
+
 char* assert_bounds(Byte_Buffer b, size_t n, const char* file, int line) {
   if (n >= b.len) {
     fprintf(stderr, "%s:%d: Array index out of bounds. %zu >= %zu\n", file, line, n, b.len);
@@ -29,18 +40,31 @@ char* assert_bounds(Byte_Buffer b, size_t n, const char* file, int line) {
 
 #define AT(b, n) *(assert_bounds((b), (n), __FILE__, __LINE__))
 
+void print_byte_buffer(Byte_Buffer buff, size_t nbytes) {
+  for (size_t i = 0; i < buff.len; i++) {
+    printf("%02x ", (unsigned char)buff.ptr[i]);
+    if ((i+1) % nbytes == 0) printf("\n");
+  }
+}
+
 struct Allocator;
 
 typedef Byte_Buffer (*Alloc_Fn)(struct Allocator*, size_t, const char*, size_t);
 typedef void (*Free_Fn)(struct Allocator*, Byte_Buffer, const char*, size_t);
+typedef size_t (*Save_Fn)(struct Allocator*, const char*, size_t);
+typedef void (*Restore_Fn)(struct Allocator*, size_t, const char*, size_t);
 
 typedef struct Allocator {
   Alloc_Fn alloc;
   Free_Fn free;
+  Save_Fn save;
+  Restore_Fn restore;
 } Allocator;
 
 #define ALLOC(a, n) (a)->alloc((a), (n), __FILE__, __LINE__)
 #define FREE(a, b) (a)->free((a), (b), __FILE__, __LINE__)
+#define SAVE(a) (a)->save((a), __FILE__, __LINE__)
+#define RESTORE(a, b) (a)->restore((a), (b), __FILE__, __LINE__)
 
 typedef struct Malloc_Allocator {
   Allocator alloc;
@@ -92,13 +116,27 @@ void malloc_free(Malloc_Allocator* alloc, Byte_Buffer buffer, const char* file, 
   free(ptr);
 }
 
+size_t malloc_save(Malloc_Allocator* alloc, const char* file, size_t line) {
+  (void)alloc;
+  (void)file;
+  (void)line;
+  return 0;
+}
+
+void malloc_restore(Malloc_Allocator* alloc, size_t allocated, const char* file, size_t line) {
+  (void)alloc;
+  (void)allocated;
+  (void)file;
+  (void)line;
+}
+
 typedef struct Arena_Allocator {
   Allocator alloc;
   Byte_Buffer buffer;
   size_t allocated;
 } Arena_Allocator;
 
-Byte_Buffer arena_allocator_alloc(Arena_Allocator* alloc, size_t nbytes, const char* file, size_t line) {
+Byte_Buffer arena_alloc(Arena_Allocator* alloc, size_t nbytes, const char* file, size_t line) {
   (void)file;
   (void)line;
 
@@ -113,25 +151,41 @@ Byte_Buffer arena_allocator_alloc(Arena_Allocator* alloc, size_t nbytes, const c
   return (Byte_Buffer) { .ptr = ptr, .len = nbytes };
 }
 
-void arena_allocator_free(Arena_Allocator* alloc, Byte_Buffer buffer, const char* file, size_t line) {
+void arena_free(Arena_Allocator* alloc, Byte_Buffer buffer, const char* file, size_t line) {
   (void)alloc;
   (void)buffer;
   (void)file;
   (void)line;
 }
 
+size_t arena_save(Arena_Allocator* alloc, const char* file, size_t line) {
+  (void)file;
+  (void)line;
+  return alloc->allocated;
+}
+
+void arena_restore(Arena_Allocator* alloc, size_t allocated, const char* file, size_t line) {
+  (void)file;
+  (void)line;
+  alloc->allocated = allocated;
+}
+
 #define MALLOC_CREATE() (Malloc_Allocator) { \
   .alloc = {                                 \
     .alloc = (Alloc_Fn)malloc_alloc,         \
     .free = (Free_Fn)malloc_free,            \
+    .save = (Save_Fn)malloc_save,            \
+    .restore = (Restore_Fn)malloc_restore,   \
   },                                         \
   .allocated = 0,                            \
 }
 
 #define ARENA_CREATE(a, s) (Arena_Allocator) { \
   .alloc = {                                   \
-    .alloc = (Alloc_Fn)arena_allocator_alloc,  \
-    .free = (Free_Fn)arena_allocator_free,     \
+    .alloc = (Alloc_Fn)arena_alloc,            \
+    .free = (Free_Fn)arena_free,               \
+    .save = (Save_Fn)arena_save,               \
+    .restore = (Restore_Fn)arena_restore,      \
   },                                           \
   .buffer = ALLOC((a), (s)),                   \
   .allocated = 0,                              \
@@ -207,16 +261,22 @@ const char base64_encode_url[64] = {
 };
 
 // |xxxxxxyy|yyyyzzzz|zzwwwwww|
-Byte_Buffer bytes_to_base64(Allocator* alloc, Byte_Buffer bytes) {
+Byte_Buffer bytes_to_base64(Allocator* alloc, Byte_Buffer bytes, bool padding) {
   size_t bits_len = bytes.len * 8;
   size_t base64_len = (bits_len + 5) / 6;
 
-  Byte_Buffer base64 = ALLOC(alloc, base64_len);
+  size_t padding_len = padding ? base64_len % 4 : 0;
+
+  Byte_Buffer base64 = ALLOC(alloc, base64_len + padding_len);
   if (base64.ptr != NULL) {
     size_t out_size = 0;
 
     for (size_t in = 0; in < bytes.len - 2; in += 3) {
-      int bits = ((int)AT(bytes, in+0) << 16) | ((int)AT(bytes, in+1) << 8) | (int)AT(bytes, in+2);
+      unsigned char b0 = AT(bytes, in+0);
+      unsigned char b1 = AT(bytes, in+1);
+      unsigned char b2 = AT(bytes, in+2);
+
+      unsigned int bits = ((unsigned int)b0 << 16) | ((unsigned int)b1 << 8) | (unsigned int)b2;
 
       AT(base64, out_size++) = base64_encode[(bits >> 18) & 0x3f];
       AT(base64, out_size++) = base64_encode[(bits >> 12) & 0x3f];
@@ -225,18 +285,29 @@ Byte_Buffer bytes_to_base64(Allocator* alloc, Byte_Buffer bytes) {
     }
 
     if (bytes.len % 3 == 2) {
-      int bits = ((int)AT(bytes, bytes.len - 2) << 16) | ((int)AT(bytes, bytes.len - 1) << 8);
+      unsigned char b0 = AT(bytes, bytes.len - 2);
+      unsigned char b1 = AT(bytes, bytes.len - 1);
+
+      unsigned int bits = ((unsigned int)b0 << 16) | ((unsigned int)b1 << 8);
 
       AT(base64, out_size++) = base64_encode[(bits >> 18) & 0x3f];
       AT(base64, out_size++) = base64_encode[(bits >> 12) & 0x3f];
+      //AT(base64, out_size++) = base64_encode[(bits >> 6) & 0x3f];
     }
 
     if (bytes.len % 3 == 1) {
-      int bits = (int)AT(bytes, bytes.len - 1) << 16;
+      unsigned char b0 = AT(bytes, bytes.len - 1);
+
+      unsigned int bits = (unsigned int)b0 << 16;
 
       AT(base64, out_size++) = base64_encode[(bits >> 18) & 0x3f];
       AT(base64, out_size++) = base64_encode[(bits >> 12) & 0x3f];
     }
+
+    for (size_t i = 0; i < padding_len; i++)
+      AT(base64, out_size++) = '=';
+
+    assert(out_size == base64_len+padding_len);
   }
 
   return base64;
@@ -360,7 +431,7 @@ Byte_Buffer remove_line_breaks(Byte_Buffer content) {
     src++;
   }
 
-  return (Byte_Buffer) { .ptr = content.ptr, .len = dst - content.ptr };
+  return byte_buffer_slice(content, 0, dst - content.ptr);
 }
 
 Byte_Buffer fixed_xor(Allocator* alloc, Byte_Buffer bytes0, Byte_Buffer bytes1) {
@@ -428,8 +499,8 @@ bool find_xor_key(Byte_Buffer bytes, uint8_t* key_out, size_t* score_out) {
     return key != 0;
 }
 
-Byte_Buffer single_key_xor(Allocator* alloc, Byte_Buffer plaintext, uint8_t key) {
-  Byte_Buffer buffer = ALLOC(alloc, plaintext.len);
+Byte_Buffer single_key_xor(Byte_Buffer buffer, Byte_Buffer plaintext, uint8_t key) {
+  assert(buffer.len == plaintext.len);
 
   if (buffer.ptr != NULL) {
     for (size_t i = 0; i < plaintext.len; i++) {
@@ -440,8 +511,8 @@ Byte_Buffer single_key_xor(Allocator* alloc, Byte_Buffer plaintext, uint8_t key)
   return buffer;
 }
 
-Byte_Buffer repeating_key_xor(Allocator* alloc, Byte_Buffer plaintext, Byte_Buffer key) {
-  Byte_Buffer buffer = ALLOC(alloc, plaintext.len);
+Byte_Buffer repeating_key_xor(Byte_Buffer buffer, Byte_Buffer plaintext, Byte_Buffer key) {
+  assert(buffer.len == plaintext.len);
 
   if (buffer.ptr != NULL) {
     for (size_t i = 0; i < plaintext.len; i++) {
@@ -486,31 +557,61 @@ error:
     return EMPTY_BYTE_BUFFER;
 }
 
-// Byte_Buffer encode_aes_128_ecb(Allocator* alloc, Byte_Buffer key, Byte_Buffer data) {
-//   if (key.len != 16)
-//     return EMPTY_BYTE_BUFFER;
-//
-//   EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
-//
-//   EVP_CIPHER_CTX_init(ctx);
-//
-//   EVP_CIPHER_CTX_set_padding(ctx, false);
-//
-//   EVP_EncryptInit_ex(ctx, EVP_aes_128_ecb(), NULL, (unsigned char*)key.ptr, NULL);
-//
-//   unsigned char buffer[1024], *pointer = buffer;
-//   int outlen;
-//
-//   EVP_EncryptUpdate(ctx, pointer, &outlen, (unsigned char*)data.ptr, data.len);
-//
-//   pointer += outlen;
-//   EVP_EncryptFinal_ex(ctx, pointer, &outlen);
-//   pointer += outlen;
-//
-//   return u_string(buffer, pointer-buffer);
-// }
+Byte_Buffer encode_aes_128_ecb(Byte_Buffer out, Byte_Buffer key, Byte_Buffer data, bool padding) {
+  if (key.len != 16)
+    return EMPTY_BYTE_BUFFER;
 
-Byte_Buffer decode_aes_128_ecb(Allocator* alloc, Byte_Buffer key, Byte_Buffer data) {
+  EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+
+  EVP_CIPHER_CTX_init(ctx);
+
+  if (!EVP_EncryptInit_ex(ctx, EVP_aes_128_ecb(), NULL, (unsigned char*)key.ptr, NULL)) {
+    EVP_CIPHER_CTX_free(ctx);
+    return EMPTY_BYTE_BUFFER;
+  }
+
+  if (!EVP_CIPHER_CTX_set_padding(ctx, padding)) {
+    EVP_CIPHER_CTX_free(ctx);
+    return EMPTY_BYTE_BUFFER;
+  }
+
+  int block_size = EVP_CIPHER_CTX_block_size(ctx);
+
+  if (out.len < data.len + block_size) {
+    EVP_CIPHER_CTX_free(ctx);
+    return EMPTY_BYTE_BUFFER;
+  }
+
+  unsigned char* buffer = (unsigned char*)out.ptr;
+  int final_size = 0;
+  int outlen = 0;
+
+  if (!EVP_EncryptUpdate(ctx, buffer + final_size, &outlen, (unsigned char*)data.ptr, data.len)) {
+    EVP_CIPHER_CTX_free(ctx);
+    return EMPTY_BYTE_BUFFER;
+  }
+
+  final_size += outlen;
+
+  outlen = 0;
+  if (!EVP_EncryptFinal_ex(ctx, buffer + final_size, &outlen)) {
+    EVP_CIPHER_CTX_free(ctx);
+    return EMPTY_BYTE_BUFFER;
+  }
+
+  final_size += outlen;
+
+  assert(EVP_CIPHER_CTX_get_key_length(ctx) == 16);
+  assert(block_size == 16);
+
+  EVP_CIPHER_CTX_free(ctx);
+
+  out.len = final_size;
+
+  return out;
+}
+
+Byte_Buffer decode_aes_128_ecb(Byte_Buffer out, Byte_Buffer key, Byte_Buffer data, bool padding) {
   if (key.len != 16)
     return EMPTY_BYTE_BUFFER;
 
@@ -523,16 +624,17 @@ Byte_Buffer decode_aes_128_ecb(Allocator* alloc, Byte_Buffer key, Byte_Buffer da
     return EMPTY_BYTE_BUFFER;
   }
 
-  if (!EVP_CIPHER_CTX_set_padding(ctx, true)) {
+  if (!EVP_CIPHER_CTX_set_padding(ctx, padding)) {
     EVP_CIPHER_CTX_free(ctx);
     return EMPTY_BYTE_BUFFER;
   }
 
   int block_size = EVP_CIPHER_CTX_block_size(ctx);
 
-  Byte_Buffer out = ALLOC(alloc, data.len + block_size);
-  if (out.ptr == NULL)
+  if (out.len < data.len + block_size) {
+    EVP_CIPHER_CTX_free(ctx);
     return EMPTY_BYTE_BUFFER;
+  }
 
   unsigned char* buffer = (unsigned char*)out.ptr;
   int final_size = 0;
@@ -545,6 +647,7 @@ Byte_Buffer decode_aes_128_ecb(Allocator* alloc, Byte_Buffer key, Byte_Buffer da
 
   final_size += outlen;
 
+  outlen = 0;
   if (!EVP_DecryptFinal_ex(ctx, buffer + final_size, &outlen)) {
     EVP_CIPHER_CTX_free(ctx);
     return EMPTY_BYTE_BUFFER;
@@ -553,11 +656,131 @@ Byte_Buffer decode_aes_128_ecb(Allocator* alloc, Byte_Buffer key, Byte_Buffer da
   final_size += outlen;
 
   assert(EVP_CIPHER_CTX_get_key_length(ctx) == 16);
+  assert(block_size == 16);
 
   EVP_CIPHER_CTX_free(ctx);
 
   out.len = final_size;
 
+  return out;
+}
+
+size_t align_to(size_t value, size_t align) {
+  return (value + (align - 1)) & (~align + 1);
+}
+
+Byte_Buffer pkcs7(Byte_Buffer out, Byte_Buffer block) {
+  size_t block_size = out.len;
+  size_t padding = block.len >= block_size ? 0 : block_size - (block.len % block_size);
+
+  memcpy(out.ptr, block.ptr, block.len);
+  memset(out.ptr+block.len, (int)padding, padding);
+
+  return out;
+}
+
+Byte_Buffer pkcs7_undo(Byte_Buffer out, Byte_Buffer block) {
+  if (block.len == 0 || out.len != block.len) {
+    return EMPTY_BYTE_BUFFER;
+  }
+
+  size_t padding = AT(block, block.len - 1);
+
+  if (padding < block.len) {
+    size_t count = 0;
+
+    for (size_t i = block.len - padding; i < block.len; i++)
+      count += (size_t)AT(block, i) == padding;
+
+    if (count == padding)
+      out.len = block.len - padding;
+  }
+
+  memcpy(out.ptr, block.ptr, out.len);
+
+  return out;
+}
+
+Byte_Buffer encode_aes_128_cbc(Allocator* alloc, Byte_Buffer key, Byte_Buffer data) {
+  Byte_Buffer out = ALLOC(alloc, align_to(data.len, 16));
+
+  size_t allocated = SAVE(alloc);
+
+  Byte_Buffer prev_block = ALLOC(alloc, 16);
+  memset(prev_block.ptr, 0, 16);
+
+  Byte_Buffer block = ALLOC(alloc, 16);
+  Byte_Buffer buffer = ALLOC(alloc, 16+16);
+
+  size_t out_offset = 0;
+  size_t in_offset = 0;
+  while (in_offset < data.len) {
+    size_t len = in_offset+16 < data.len ? 16 : data.len - in_offset;
+
+    pkcs7(block, byte_buffer_slice(data, in_offset, len));
+    repeating_key_xor(block, block, prev_block);
+    Byte_Buffer encoded = encode_aes_128_ecb(buffer, key, block, false);
+
+    assert(encoded.len == 16);
+
+    memcpy(&AT(out, out_offset), encoded.ptr, encoded.len);
+    out_offset += encoded.len;
+
+    in_offset += 16;
+    memcpy(prev_block.ptr, encoded.ptr, encoded.len);
+  }
+
+  RESTORE(alloc, allocated);
+
+  FREE(alloc, buffer);
+  FREE(alloc, block);
+  FREE(alloc, prev_block);
+
+  assert(out_offset == out.len);
+  return out;
+}
+
+Byte_Buffer decode_aes_128_cbc(Allocator* alloc, Byte_Buffer key, Byte_Buffer data) {
+  Byte_Buffer out = ALLOC(alloc, align_to(data.len, 16));
+
+  size_t allocated = SAVE(alloc);
+
+  Byte_Buffer prev_block = ALLOC(alloc, 16);
+  memset(prev_block.ptr, 0, 16);
+
+  Byte_Buffer block = ALLOC(alloc, 16);
+  Byte_Buffer buffer = ALLOC(alloc, 16+16);
+
+  size_t in_offset = 0;
+  size_t out_offset = 0;
+  while (in_offset < data.len) {
+    size_t len = in_offset+16 < data.len ? 16 : data.len - in_offset;
+
+    Byte_Buffer ciphertext = byte_buffer_slice(data, in_offset, len);
+    Byte_Buffer decoded = decode_aes_128_ecb(buffer, key, ciphertext, false);
+
+    assert(decoded.len == 16);
+
+    repeating_key_xor(block, decoded, prev_block);
+
+    Byte_Buffer x = pkcs7_undo(block, block);
+
+    memcpy(&AT(out, out_offset), x.ptr, x.len);
+    out_offset += x.len;
+
+    in_offset += 16;
+    memcpy(prev_block.ptr, ciphertext.ptr, ciphertext.len);
+  }
+
+  RESTORE(alloc, allocated);
+
+  FREE(alloc, buffer);
+  FREE(alloc, block);
+  FREE(alloc, prev_block);
+
+  //assert(out_offset == out.len);
+
+  out.len = out_offset;
   return out;
 }
 
@@ -575,7 +798,7 @@ int main(void) {
   {
     Byte_Buffer hex = from_cstring(alloc, "49276d206b696c6c696e6720796f757220627261696e206c696b65206120706f69736f6e6f7573206d757368726f6f6d");
     Byte_Buffer bytes = hex_to_bytes(alloc, hex);
-    Byte_Buffer base64 = bytes_to_base64(alloc, bytes);
+    Byte_Buffer base64 = bytes_to_base64(alloc, bytes, false);
 
     assert(strncmp("SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t", base64.ptr, base64.len) == 0);
 
@@ -621,7 +844,8 @@ int main(void) {
     assert(find_xor_key(bytes, &key, NULL));
     assert(key == 0x58);
 
-    Byte_Buffer plaintext = single_key_xor(alloc, bytes, key);
+    Byte_Buffer plaintext = ALLOC(alloc, bytes.len);
+    single_key_xor(plaintext, bytes, key);
 
     assert(strncmp("Cooking MC's like a pound of bacon", plaintext.ptr, plaintext.len) == 0);
 
@@ -687,7 +911,8 @@ int main(void) {
     assert(max_key != 0);
 
     Byte_Buffer bytes = hex_to_bytes(alloc, message);
-    Byte_Buffer plaintext = single_key_xor(alloc, bytes, max_key);
+    Byte_Buffer plaintext = ALLOC(alloc, bytes.len);
+    single_key_xor(plaintext, bytes, max_key);
 
     assert(strncmp("Now that the party is jumping\n", plaintext.ptr, plaintext.len) == 0);
 
@@ -711,7 +936,8 @@ int main(void) {
     Byte_Buffer plaintext = from_cstring(alloc, text);
     Byte_Buffer key = from_cstring(alloc, "ICE");
 
-    Byte_Buffer encrypted = repeating_key_xor(alloc, plaintext, key);
+    Byte_Buffer encrypted = ALLOC(alloc, plaintext.len);
+    repeating_key_xor(encrypted, plaintext, key);
     Byte_Buffer hex = bytes_to_hex(alloc, encrypted);
 
     assert(strncmp(expected, hex.ptr, hex.len) == 0);
@@ -738,7 +964,8 @@ int main(void) {
 
   // challenge 6
   {
-    Byte_Buffer base64 = remove_line_breaks(read_entire_file(alloc, "6.txt"));
+    Byte_Buffer content = read_entire_file(alloc, "6.txt");
+    Byte_Buffer base64 = remove_line_breaks(content);
     Byte_Buffer bytes = base64_to_bytes(alloc, base64);
 
     assert(bytes.ptr != NULL);
@@ -800,7 +1027,8 @@ int main(void) {
 
     assert(strncmp("Terminator X: Bring the noise", key_block.ptr, key_block.len) == 0);
 
-    Byte_Buffer decrypted = repeating_key_xor(alloc, bytes, key_block);
+    Byte_Buffer decrypted = ALLOC(alloc, bytes.len);
+    repeating_key_xor(decrypted, bytes, key_block);
 
     assert(strncmp(decrypted.ptr, "I'm back and I'm ringin' the bell\n", 33) == 0);
 
@@ -808,7 +1036,7 @@ int main(void) {
     FREE(alloc, block_alloc);
     FREE(alloc, key_block);
     FREE(alloc, bytes);
-    FREE(alloc, base64);
+    FREE(alloc, content);
   }
 
   arena.allocated = 0;
@@ -819,21 +1047,23 @@ int main(void) {
 
     SSL_load_error_strings();
 
-    Byte_Buffer base64 = remove_line_breaks(read_entire_file(alloc, "7.txt"));
+    Byte_Buffer content = read_entire_file(alloc, "7.txt");
+    Byte_Buffer base64 = remove_line_breaks(content);
     Byte_Buffer bytes = base64_to_bytes(alloc, base64);
     Byte_Buffer key = from_cstring(alloc, "YELLOW SUBMARINE");
+    Byte_Buffer buffer = ALLOC(alloc, bytes.len + 16);
 
     assert(bytes.ptr != NULL);
 
-    Byte_Buffer data = decode_aes_128_ecb(alloc, key, bytes);
+    Byte_Buffer data = decode_aes_128_ecb(buffer, key, bytes, true);
 
     assert(data.len == 2876);
     assert(strncmp(data.ptr, "I'm back and I'm ringin' the bell \n", 34) == 0);
 
-    FREE(alloc, data);
+    FREE(alloc, buffer);
     FREE(alloc, key);
     FREE(alloc, bytes);
-    FREE(alloc, base64);
+    FREE(alloc, content);
   }
 
   arena.allocated = 0;
@@ -907,9 +1137,52 @@ int main(void) {
     FREE(alloc, content);
   }
 
+  arena.allocated = 0;
+
+  // challenge 9
+  {
+    Byte_Buffer plaintext = from_cstring(alloc, "YELLOW SUBMARINE");
+    Byte_Buffer padded = pkcs7(ALLOC(alloc, 20), plaintext);
+
+    assert(padded.len == 20);
+    assert(strncmp(padded.ptr, "YELLOW SUBMARINE\x04\x04\x04\x04", 20) == 0);
+
+    FREE(alloc, padded);
+    FREE(alloc, plaintext);
+  }
+
+  arena.allocated = 0;
+
+  // challenge 10
+  {
+    // openssl aes-128-cbc -a -d -in 10.txt -K $(echo -n "YELLOW SUBMARINE" | xxd -ps) -iv 0
+
+    Byte_Buffer content = read_entire_file(alloc, "10.txt");
+    Byte_Buffer base64 = remove_line_breaks(content);
+    Byte_Buffer bytes_encoded = base64_to_bytes(alloc, base64);
+    Byte_Buffer key = from_cstring(alloc, "YELLOW SUBMARINE");
+
+    Byte_Buffer decoded = decode_aes_128_cbc(alloc, key, bytes_encoded);
+    Byte_Buffer encoded = encode_aes_128_cbc(alloc, key, decoded);
+    Byte_Buffer base64_2 = bytes_to_base64(alloc, encoded, false);
+
+    assert(bytes_encoded.len == encoded.len);
+
+    assert(base64.len == base64_2.len);
+    assert(memcmp(base64.ptr, base64_2.ptr, base64.len) == 0);
+
+    FREE(alloc, base64_2);
+    FREE(alloc, encoded);
+    FREE(alloc, decoded);
+    FREE(alloc, key);
+    FREE(alloc, bytes_encoded);
+    FREE(alloc, content);
+  }
+
   ARENA_DESTROY(&mallocator.alloc, &arena);
 
   printf("Malloc Allocated: %zu\n", mallocator.allocated);
+  printf("Arena Allocated: %zu\n", arena.allocated);
 
   return 0;
 }

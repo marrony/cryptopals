@@ -380,8 +380,8 @@ error:
     return EMPTY_BYTE_BUFFER;
 }
 
-Byte_Buffer encode_aes_128_ecb_buffer(Allocator* alloc, Byte_Buffer data) {
-  return ALLOC(alloc, data.len + 16);
+Byte_Buffer encode_aes_128_ecb_buffer(Allocator* alloc, size_t data_len) {
+  return ALLOC(alloc, data_len + 16);
 }
 
 /* Electronic Code Block */
@@ -439,8 +439,8 @@ Byte_Buffer encode_aes_128_ecb(Byte_Buffer out, Byte_Buffer key, Byte_Buffer dat
   return out;
 }
 
-Byte_Buffer decode_aes_128_ecb_buffer(Allocator* alloc, Byte_Buffer data) {
-  return ALLOC(alloc, data.len + 16);
+Byte_Buffer decode_aes_128_ecb_buffer(Allocator* alloc, size_t data_len) {
+  return ALLOC(alloc, data_len + 16);
 }
 
 /* Cipher Block Chaining */
@@ -697,6 +697,26 @@ const char* detect_encoding(Allocator* alloc, Byte_Buffer encoded, size_t block_
 
 size_t rand_between(size_t start, size_t end) {
   return rand() % (end - start + 1) + start;
+}
+
+Byte_Buffer byte_buffer_filled(Allocator* alloc, size_t size, uint8_t byte) {
+  Byte_Buffer bytes = ALLOC(alloc, size);
+  memset(bytes.ptr, byte, size);
+  return bytes;
+}
+
+Byte_Buffer byte_buffer_concat(Allocator* alloc, Byte_Buffer a, Byte_Buffer b) {
+  Byte_Buffer data = ALLOC(alloc, a.len + b.len);
+  memcpy(data.ptr, a.ptr, a.len);
+  memcpy(data.ptr+a.len, b.ptr, b.len);
+  return data;
+}
+
+Byte_Buffer byte_buffer_random(Allocator* alloc, size_t size) {
+  Byte_Buffer bytes = ALLOC(alloc, size);
+  for (size_t i = 0; i < size; i++)
+    AT(bytes, i) = rand_between(0, 255);
+  return bytes;
 }
 
 int main(void) {
@@ -1033,13 +1053,8 @@ int main(void) {
   {
     srand(time(NULL));
 
-    Byte_Buffer random_key = ALLOC(alloc, 16);
-    for (size_t i = 0; i < random_key.len; i++)
-      AT(random_key, i) = rand_between(0, 255);
-
-    Byte_Buffer iv = ALLOC(alloc, 16);
-    for (size_t i = 0; i < iv.len; i++)
-      AT(iv, i) = rand_between(0, 255);
+    Byte_Buffer random_key = byte_buffer_random(alloc, 16);
+    Byte_Buffer iv = byte_buffer_random(alloc, 16);
 
     size_t prefix_len = rand_between(5, 10);
     size_t suffix_len = rand_between(5, 10);
@@ -1064,7 +1079,7 @@ int main(void) {
     } else {
       actual_mode = "ecb";
 
-      encoding_buffer = encode_aes_128_ecb_buffer(alloc, data);
+      encoding_buffer = encode_aes_128_ecb_buffer(alloc, data.len);
       encoded = encode_aes_128_ecb(encoding_buffer, random_key, data, true);
     }
 
@@ -1076,6 +1091,108 @@ int main(void) {
     FREE(alloc, random_key);
 
     assert(strncmp(actual_mode, inferred_mode, 3) == 0);
+  }
+
+  RESTORE(alloc, 0);
+
+  // challenge 12
+  {
+    srand(69);
+
+    Byte_Buffer unknown_base64 = from_cstring(alloc, "Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkg"
+                                                     "aGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBq"
+                                                     "dXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUg"
+                                                     "YnkK");
+    Byte_Buffer unknown_bytes = base64_to_bytes(alloc, unknown_base64);
+
+    Byte_Buffer key = byte_buffer_random(alloc, 16);
+    Byte_Buffer input_data = byte_buffer_filled(alloc, unknown_bytes.len * 2, 0);
+    Byte_Buffer target_buffer = encode_aes_128_ecb_buffer(alloc, input_data.len);
+    Byte_Buffer test_buffer = encode_aes_128_ecb_buffer(alloc, input_data.len);
+    Byte_Buffer decoded = byte_buffer_filled(alloc, unknown_bytes.len, 0);
+
+    memcpy(input_data.ptr, unknown_bytes.ptr, unknown_bytes.len);
+    size_t initial_len = encode_aes_128_ecb(target_buffer, key, byte_buffer_slice(input_data, 0, unknown_bytes.len), true).len;
+
+    size_t block_size = 0;
+
+    size_t i = 1;
+    while (i < unknown_bytes.len) {
+      memset(input_data.ptr, 'A', i);
+      memcpy(input_data.ptr+i, unknown_bytes.ptr, unknown_bytes.len);
+      size_t new_len = encode_aes_128_ecb(target_buffer, key, byte_buffer_slice(input_data, 0, i + unknown_bytes.len), true).len;
+
+      if (new_len > initial_len) {
+        block_size = new_len - initial_len;
+        break;
+      }
+      i += 1;
+    }
+
+    assert(block_size == 16);
+
+    for (size_t i = 0; i < unknown_bytes.len; i++) {
+      size_t padding_len = block_size - (i % block_size) - 1;
+      size_t block_index = i / block_size;
+
+      memset(input_data.ptr, 'A', padding_len);
+      memcpy(input_data.ptr + padding_len, unknown_bytes.ptr, unknown_bytes.len);
+      Byte_Buffer target_block = byte_buffer_slice(
+          encode_aes_128_ecb(target_buffer, key, byte_buffer_slice(input_data, 0, padding_len + unknown_bytes.len), true),
+          block_index * block_size,
+          16
+      );
+
+      memset(input_data.ptr, 'A', padding_len);
+      memcpy(input_data.ptr + padding_len, decoded.ptr, i);
+      AT(input_data, padding_len + i) = 0xff;
+
+      size_t input_len = padding_len + i + 1;
+      size_t rem_len = input_data.len - input_len;
+      size_t copy_len = rem_len < unknown_bytes.len ? rem_len : unknown_bytes.len;
+      memcpy(input_data.ptr + input_len, unknown_bytes.ptr, copy_len);
+      input_len += copy_len;
+
+      bool found = false;
+      for (size_t ch = 0; ch < 256; ch++) {
+        uint8_t test_ch = ch;
+
+        AT(input_data, padding_len + i) = test_ch;
+
+        Byte_Buffer test_block = byte_buffer_slice(
+            encode_aes_128_ecb(test_buffer, key, byte_buffer_slice(input_data, 0, input_len), true),
+            block_index * block_size,
+            16
+        );
+
+        if (memcmp(target_block.ptr, test_block.ptr, 16) == 0) {
+          AT(decoded, i) = test_ch;
+          found = true;
+          break;
+        }
+      }
+
+      assert(found);
+    }
+
+    assert(memcmp(decoded.ptr, unknown_bytes.ptr, unknown_bytes.len) == 0);
+
+    assert(strncmp(
+          "Rollin' in my 5.0\n"
+          "With my rag-top down so my hair can blow\n"
+          "The girlies on standby waving just to say hi\n"
+          "Did you stop? No, I just drove by\n",
+          decoded.cptr,
+          decoded.len) == 0
+    );
+
+    FREE(alloc, decoded);
+    FREE(alloc, test_buffer);
+    FREE(alloc, target_buffer);
+    FREE(alloc, input_data);
+    FREE(alloc, key);
+    FREE(alloc, unknown_bytes);
+    FREE(alloc, unknown_base64);
   }
 
   ARENA_DESTROY(&mallocator.alloc, &arena);

@@ -40,7 +40,7 @@ uint8_t* assert_bounds(Byte_Buffer b, size_t n, const char* file, int line) {
 
 #define AT(b, n) (*(assert_bounds((b), (n), __FILE__, __LINE__)))
 
-void print_byte_buffer(Byte_Buffer buff, size_t nbytes) {
+void byte_buffer_print(Byte_Buffer buff, size_t nbytes) {
   for (size_t i = 0; i < buff.len; i++) {
     printf("%02x ", AT(buff, i));
     if ((i+1) % nbytes == 0) printf("\n");

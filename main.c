@@ -723,6 +723,39 @@ const char* detect_encoding(Allocator* alloc, Byte_Buffer encoded, size_t block_
   return inferred_mode;
 }
 
+
+// AES-128-ECB('A' * padding_len + decoded + unknown-bytes, random-key)
+Byte_Buffer oracle_challange_12(
+    Byte_Buffer output_buffer,
+    Byte_Buffer input_buffer,
+    size_t padding_len,
+    Byte_Buffer decoded,
+    Byte_Buffer unknown_bytes,
+    Byte_Buffer random_key) {
+
+  byte_buffer_memset(byte_buffer_slice(input_buffer, 0, padding_len), 'A');
+  byte_buffer_copy(
+      byte_buffer_slice(input_buffer, padding_len, decoded.len),
+      byte_buffer_slice(decoded, 0, decoded.len)
+  );
+
+  size_t input_len = padding_len + decoded.len;
+  size_t rem_len = input_buffer.len - input_len;
+  size_t copy_len = rem_len < unknown_bytes.len ? rem_len : unknown_bytes.len;
+  byte_buffer_copy(
+      byte_buffer_slice(input_buffer, input_len, copy_len),
+      byte_buffer_slice(unknown_bytes, 0, copy_len)
+  );
+  input_len += copy_len;
+
+  return encode_aes_128_ecb(
+      output_buffer,
+      random_key,
+      byte_buffer_slice(input_buffer, 0, input_len),
+      true
+  );
+}
+
 Byte_Buffer for_profile(Allocator* alloc, const char* email) {
   const char suffix[] = "email=";
   const char prefix[] = "&uid=10&role=user";
@@ -1151,7 +1184,7 @@ int main(void) {
                                                      "YnkK");
     Byte_Buffer unknown_bytes = base64_to_bytes(alloc, unknown_base64);
 
-    Byte_Buffer key = byte_buffer_random(alloc, 16);
+    Byte_Buffer random_key = byte_buffer_random(alloc, 16);
     Byte_Buffer input_data = byte_buffer_filled(alloc, unknown_bytes.len * 2, 0);
     Byte_Buffer target_buffer = encode_aes_128_ecb_buffer(alloc, input_data.len);
     Byte_Buffer test_buffer = encode_aes_128_ecb_buffer(alloc, input_data.len);
@@ -1159,73 +1192,75 @@ int main(void) {
 
     // AES-128-ECB(unknown-bytes, random-key)
     byte_buffer_copy(input_data, unknown_bytes);
-    size_t initial_len = encode_aes_128_ecb(target_buffer, key, byte_buffer_slice(input_data, 0, unknown_bytes.len), true).len;
+    size_t initial_len = oracle_challange_12(
+        target_buffer,
+        input_data,
+        0,
+        EMPTY_BYTE_BUFFER,
+        unknown_bytes,
+        random_key
+    ).len;
     assert(initial_len != 0);
 
     size_t block_size = 0;
 
-    size_t i = 1;
-    while (i < unknown_bytes.len) {
+    for (size_t input_index = 0; input_index < unknown_bytes.len; input_index++) {
       // AES-128-ECB(N * 'A' + unknown-bytes, random-key)
-      byte_buffer_memset(byte_buffer_slice(input_data, 0, i), 'A');
-      byte_buffer_copy(
-          byte_buffer_slice(input_data, i, unknown_bytes.len),
-          unknown_bytes
-      );
-      size_t new_len = encode_aes_128_ecb(target_buffer, key, byte_buffer_slice(input_data, 0, i + unknown_bytes.len), true).len;
+      size_t new_len = oracle_challange_12(
+          target_buffer,
+          input_data,
+          input_index,
+          EMPTY_BYTE_BUFFER,
+          unknown_bytes,
+          random_key
+      ).len;
       assert(new_len != 0);
 
       if (new_len > initial_len) {
         block_size = new_len - initial_len;
         break;
       }
-      i += 1;
     }
 
     assert(block_size == 16);
 
-    for (size_t i = 0; i < unknown_bytes.len; i++) {
-      size_t padding_len = block_size - (i % block_size) - 1;
-      size_t block_index = i / block_size;
+    for (size_t input_index = 0; input_index < unknown_bytes.len; input_index++) {
+      size_t padding_len = block_size - (input_index % block_size) - 1;
+      size_t block_index = input_index / block_size;
 
       // AES-128-ECB('A' * padding_len + unknown-bytes, random-key)
-      byte_buffer_memset(byte_buffer_slice(input_data, 0, padding_len), 'A');
-      byte_buffer_copy(
-          byte_buffer_slice(input_data, padding_len, unknown_bytes.len),
-          unknown_bytes
+      Byte_Buffer encoded = oracle_challange_12(
+          target_buffer,
+          input_data,
+          padding_len,
+          EMPTY_BYTE_BUFFER,
+          unknown_bytes,
+          random_key
       );
-      Byte_Buffer encoded = encode_aes_128_ecb(target_buffer, key, byte_buffer_slice(input_data, 0, padding_len + unknown_bytes.len), true);
       assert(encoded.len != 0);
+
       Byte_Buffer target_block = byte_buffer_slice(encoded, block_index * block_size, 16);
-
-      // AES-128-ECB('A' * padding_len + decoded + '?' + unknown-bytes, random-key)
-      byte_buffer_memset(byte_buffer_slice(input_data, 0, padding_len), 'A');
-      byte_buffer_copy(
-          byte_buffer_slice(input_data, padding_len, i),
-          byte_buffer_slice(decoded, 0, i)
-      );
-      AT(input_data, padding_len + i) = 0xff;
-
-      size_t input_len = padding_len + i + 1;
-      size_t rem_len = input_data.len - input_len;
-      size_t copy_len = rem_len < unknown_bytes.len ? rem_len : unknown_bytes.len;
-      byte_buffer_copy(
-          byte_buffer_slice(input_data, input_len, copy_len),
-          byte_buffer_slice(unknown_bytes, 0, copy_len)
-      );
-      input_len += copy_len;
 
       bool found = false;
       for (size_t ch = 0; ch < 256; ch++) {
         uint8_t test_ch = ch;
 
-        AT(input_data, padding_len + i) = test_ch;
+        // AES-128-ECB('A' * padding_len + decoded + '?' + unknown-bytes, random-key)
+        AT(decoded, input_index) = test_ch;
+        Byte_Buffer encoded = oracle_challange_12(
+            test_buffer,
+            input_data,
+            padding_len,
+            byte_buffer_slice(decoded, 0, input_index+1),
+            unknown_bytes,
+            random_key
+        );
+        assert(encoded.len != 0);
 
-        Byte_Buffer encoded = encode_aes_128_ecb(test_buffer, key, byte_buffer_slice(input_data, 0, input_len), true);
         Byte_Buffer test_block = byte_buffer_slice(encoded, block_index * block_size, 16);
 
         if (byte_buffer_cmp(target_block, test_block) == 0) {
-          AT(decoded, i) = test_ch;
+          AT(decoded, input_index) = test_ch;
           found = true;
           break;
         }
@@ -1248,7 +1283,7 @@ int main(void) {
     FREE(alloc, test_buffer);
     FREE(alloc, target_buffer);
     FREE(alloc, input_data);
-    FREE(alloc, key);
+    FREE(alloc, random_key);
     FREE(alloc, unknown_bytes);
     FREE(alloc, unknown_base64);
   }

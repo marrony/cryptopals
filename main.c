@@ -667,7 +667,7 @@ size_t hash_blob(Byte_Buffer key) {
 
 bool equal_blob(Byte_Buffer a, Byte_Buffer b) {
   if (a.len != b.len) return false;
-  return memcmp(a.ptr, b.ptr, b.len) == 0;
+  return byte_buffer_cmp(a, b) == 0;
 }
 
 void free_key(Allocator* alloc, Byte_Buffer key) {
@@ -778,7 +778,7 @@ int main(void) {
     Byte_Buffer bytes = hex_to_bytes(alloc, hex);
     Byte_Buffer base64 = bytes_to_base64(alloc, bytes, false);
 
-    assert(strncmp("SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t", base64.cptr, base64.len) == 0);
+    assert(byte_buffer_strcmp(base64, "SSdtIGtpbGxpbmcgeW91ciBicmFpbiBsaWtlIGEgcG9pc29ub3VzIG11c2hyb29t") == 0);
 
     FREE(alloc, base64);
     FREE(alloc, bytes);
@@ -800,7 +800,7 @@ int main(void) {
     Byte_Buffer xor = fixed_xor(alloc, bytes1, bytes2);
     Byte_Buffer hex = bytes_to_hex(alloc, xor);
 
-    assert(strncmp("746865206b696420646f6e277420706c6179", hex.cptr, hex.len) == 0);
+    assert(byte_buffer_strcmp(hex, "746865206b696420646f6e277420706c6179") == 0);
 
     FREE(alloc, hex);
     FREE(alloc, xor);
@@ -825,7 +825,7 @@ int main(void) {
     Byte_Buffer plaintext = ALLOC(alloc, bytes.len);
     single_key_xor(plaintext, bytes, key);
 
-    assert(strncmp("Cooking MC's like a pound of bacon", plaintext.cptr, plaintext.len) == 0);
+    assert(byte_buffer_strcmp(plaintext, "Cooking MC's like a pound of bacon") == 0);
 
     FREE(alloc, plaintext);
     FREE(alloc, bytes);
@@ -870,7 +870,7 @@ int main(void) {
     Byte_Buffer plaintext = ALLOC(alloc, bytes.len);
     single_key_xor(plaintext, bytes, max_key);
 
-    assert(strncmp("Now that the party is jumping\n", plaintext.cptr, plaintext.len) == 0);
+    assert(byte_buffer_strcmp(plaintext, "Now that the party is jumping\n") == 0);
 
     FREE(alloc, plaintext);
     FREE(alloc, bytes);
@@ -896,7 +896,7 @@ int main(void) {
     repeating_key_xor(encrypted, plaintext, key);
     Byte_Buffer hex = bytes_to_hex(alloc, encrypted);
 
-    assert(strncmp(expected, hex.cptr, hex.len) == 0);
+    assert(byte_buffer_strcmp(hex, expected) == 0);
 
     FREE(alloc, hex);
     FREE(alloc, encrypted);
@@ -954,12 +954,15 @@ int main(void) {
       RESTORE(alloc, allocated);
     }
 
-    assert(strncmp("Terminator X: Bring the noise", key_block.cptr, key_block.len) == 0);
+    assert(byte_buffer_strcmp(key_block, "Terminator X: Bring the noise") == 0);
 
     Byte_Buffer decrypted = ALLOC(alloc, bytes.len);
     repeating_key_xor(decrypted, bytes, key_block);
 
-    assert(strncmp(decrypted.cptr, "I'm back and I'm ringin' the bell\n", 33) == 0);
+    assert(byte_buffer_strcmp(
+        byte_buffer_slice(decrypted, 0, 33),
+        "I'm back and I'm ringin' the bell\n"
+    ) == 0);
 
     FREE(alloc, decrypted);
     FREE(alloc, block_alloc);
@@ -987,7 +990,7 @@ int main(void) {
     Byte_Buffer data = decode_aes_128_ecb(buffer, key, bytes, true);
 
     assert(data.len == 2876);
-    assert(strncmp(data.cptr, "I'm back and I'm ringin' the bell \n", 34) == 0);
+    assert(byte_buffer_strcmp(data, "I'm back and I'm ringin' the bell \n") == 0);
 
     FREE(alloc, buffer);
     FREE(alloc, key);
@@ -1036,7 +1039,7 @@ int main(void) {
     RESTORE(alloc, allocated);
 
     assert(message.len == 320);
-    assert(strncmp(message.cptr, "d880619740a8a19b7840a8a31c810a3d08649af70dc06f4fd5d2d69c744cd283", 64) == 0);
+    assert(byte_buffer_strcmp(message, "d880619740a8a19b7840a8a31c810a3d08649af70dc06f4fd5d2d69c744cd283") == 0);
 
     FREE(alloc, content);
   }
@@ -1049,7 +1052,7 @@ int main(void) {
     Byte_Buffer padded = pkcs7(ALLOC(alloc, 20), plaintext);
 
     assert(padded.len == 20);
-    assert(strncmp(padded.cptr, "YELLOW SUBMARINE\x04\x04\x04\x04", 20) == 0);
+    assert(byte_buffer_strcmp(padded, "YELLOW SUBMARINE\x04\x04\x04\x04") == 0);
 
     FREE(alloc, padded);
     FREE(alloc, plaintext);
@@ -1078,7 +1081,7 @@ int main(void) {
     assert(bytes_encoded.len == encoded.len);
 
     assert(base64.len == base64_2.len);
-    assert(memcmp(base64.ptr, base64_2.ptr, base64.len) == 0);
+    assert(byte_buffer_cmp(base64, base64_2) == 0);
 
     FREE(alloc, iv);
     FREE(alloc, base64_2);
@@ -1221,7 +1224,7 @@ int main(void) {
         Byte_Buffer encoded = encode_aes_128_ecb(test_buffer, key, byte_buffer_slice(input_data, 0, input_len), true);
         Byte_Buffer test_block = byte_buffer_slice(encoded, block_index * block_size, 16);
 
-        if (memcmp(target_block.ptr, test_block.ptr, 16) == 0) {
+        if (byte_buffer_cmp(target_block, test_block) == 0) {
           AT(decoded, i) = test_ch;
           found = true;
           break;
@@ -1231,15 +1234,14 @@ int main(void) {
       assert(found);
     }
 
-    assert(memcmp(decoded.ptr, unknown_bytes.ptr, unknown_bytes.len) == 0);
+    assert(byte_buffer_cmp(decoded, unknown_bytes) == 0);
 
-    assert(strncmp(
+    assert(byte_buffer_strcmp(
+          decoded,
           "Rollin' in my 5.0\n"
           "With my rag-top down so my hair can blow\n"
           "The girlies on standby waving just to say hi\n"
-          "Did you stop? No, I just drove by\n",
-          decoded.cptr,
-          decoded.len) == 0
+          "Did you stop? No, I just drove by\n") == 0
     );
 
     FREE(alloc, decoded);
@@ -1260,8 +1262,8 @@ int main(void) {
     Byte_Buffer admin = for_profile(alloc, "..........admin...........");
     Byte_Buffer user =  for_profile(alloc, "user@user.com");
 
-    assert(strncmp(admin.cptr, "email=..........admin...........&uid=10&role=user", 49) == 0);
-    assert(strncmp(user.cptr,  "email=user@user.com&uid=10&role=user", 36) == 0);
+    assert(byte_buffer_strcmp(admin, "email=..........admin...........&uid=10&role=user") == 0);
+    assert(byte_buffer_strcmp(user,  "email=user@user.com&uid=10&role=user") == 0);
 
     Byte_Buffer user_encoded = encrypt_profile(alloc, key, user);
     Byte_Buffer admin_encoded = encrypt_profile(alloc, key, admin);
@@ -1272,7 +1274,7 @@ int main(void) {
     );
 
     Byte_Buffer hacked = decrypt_profile(alloc, key, user_encoded);
-    assert(strncmp(hacked.cptr, "email=user@user.com&uid=10&role=admin...........", 36) == 0);
+    assert(byte_buffer_strcmp(hacked, "email=user@user.com&uid=10&role=admin...........") == 0);
 
     FREE(alloc, hacked);
     FREE(alloc, admin_encoded);

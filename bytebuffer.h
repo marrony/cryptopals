@@ -100,4 +100,13 @@ Byte_Buffer byte_buffer_copy(Byte_Buffer dst, Byte_Buffer src) {
   return dst;
 }
 
+int byte_buffer_cmp(Byte_Buffer a, Byte_Buffer b) {
+  return memcmp(a.ptr, b.ptr, a.len < b.len ? a.len : b.len);
+}
+
+int byte_buffer_strcmp(Byte_Buffer buf, const char* str) {
+  size_t len = strlen(str);
+  return byte_buffer_cmp(buf, (Byte_Buffer) { .cptr = (char*)str, .len = len });
+}
+
 #endif // BYTEBUFFER_H

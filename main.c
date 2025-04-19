@@ -15,6 +15,7 @@
 #include "allocator.h"
 #include "bytebuffer.h"
 #include "hashset.h"
+#include "hashmap.h"
 
 Byte_Buffer from_cstring(Allocator* alloc, const char* cstr) {
   size_t length = strlen(cstr);
@@ -389,6 +390,9 @@ Byte_Buffer encode_aes_128_ecb(Byte_Buffer out, Byte_Buffer key, Byte_Buffer dat
   if (key.len != 16)
     return EMPTY_BYTE_BUFFER;
 
+  if (!padding && data.len % 16 != 0)
+    return EMPTY_BYTE_BUFFER;
+
   EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
 
   EVP_CIPHER_CTX_init(ctx);
@@ -405,7 +409,7 @@ Byte_Buffer encode_aes_128_ecb(Byte_Buffer out, Byte_Buffer key, Byte_Buffer dat
 
   int block_size = EVP_CIPHER_CTX_block_size(ctx);
 
-  if (out.len < data.len + block_size) {
+  if (padding && out.len < data.len + block_size) {
     EVP_CIPHER_CTX_free(ctx);
     return EMPTY_BYTE_BUFFER;
   }
@@ -464,7 +468,7 @@ Byte_Buffer decode_aes_128_ecb(Byte_Buffer out, Byte_Buffer key, Byte_Buffer dat
 
   int block_size = EVP_CIPHER_CTX_block_size(ctx);
 
-  if (out.len < data.len + block_size) {
+  if (padding && out.len < data.len + block_size) {
     EVP_CIPHER_CTX_free(ctx);
     return EMPTY_BYTE_BUFFER;
   }
@@ -499,7 +503,8 @@ Byte_Buffer decode_aes_128_ecb(Byte_Buffer out, Byte_Buffer key, Byte_Buffer dat
 }
 
 size_t align_to(size_t value, size_t align) {
-  return (value + (align - 1)) & (~align + 1);
+  size_t count = (value + (align - 1)) / align;
+  return count * align;
 }
 
 Byte_Buffer pkcs7(Byte_Buffer out, Byte_Buffer block) {
@@ -637,7 +642,7 @@ size_t hash_blob(Byte_Buffer key) {
 #endif
 }
 
-bool eq_blob(Byte_Buffer a, Byte_Buffer b) {
+bool equal_blob(Byte_Buffer a, Byte_Buffer b) {
   if (a.len != b.len) return false;
   return memcmp(a.ptr, b.ptr, b.len) == 0;
 }
@@ -681,7 +686,7 @@ size_t detect_key_size(Byte_Buffer bytes) {
 }
 
 const char* detect_encoding(Allocator* alloc, Byte_Buffer encoded, size_t block_size) {
-  HashSet* set = hashset_create(alloc, 1024, hash_blob, eq_blob, NULL);
+  HashSet* set = hashset_create(alloc, 1024, hash_blob, equal_blob, NULL);
 
   for (size_t i = 0; i < encoded.len; i += block_size) {
     hashset_put(set, byte_buffer_slice(encoded, i, block_size));
@@ -717,6 +722,45 @@ Byte_Buffer byte_buffer_random(Allocator* alloc, size_t size) {
   for (size_t i = 0; i < size; i++)
     AT(bytes, i) = rand_between(0, 255);
   return bytes;
+}
+
+Byte_Buffer for_profile(Allocator* alloc, const char* email) {
+  const char suffix[] = "email=";
+  const char prefix[] = "&uid=10&role=user";
+
+  size_t suffix_len = sizeof(suffix) - 1;
+  size_t prefix_len = sizeof(prefix) - 1;
+  size_t email_len = strlen(email);
+
+  Byte_Buffer profile = byte_buffer_filled(alloc, suffix_len + prefix_len + email_len, 0);
+
+  memcpy(profile.ptr, suffix, suffix_len);
+  memcpy(profile.ptr+suffix_len, email, email_len);
+  memcpy(profile.ptr+suffix_len+email_len, prefix, prefix_len);
+
+  return profile;
+}
+
+Byte_Buffer encrypt_profile(Allocator* alloc, Byte_Buffer key, Byte_Buffer profile_encoded) {
+  size_t len = align_to(profile_encoded.len, key.len);
+  Byte_Buffer buff = ALLOC(alloc, len);
+
+  size_t allocated = SAVE(alloc);
+  Byte_Buffer input = ALLOC(alloc, len);
+  pkcs7(input, profile_encoded);
+  assert(encode_aes_128_ecb(buff, key, input, false).len == buff.len);
+
+  RESTORE(alloc, allocated);
+  FREE(alloc, input);
+
+  return buff;
+}
+
+Byte_Buffer decrypt_profile(Allocator* alloc, Byte_Buffer key, Byte_Buffer profile_encrypted) {
+  size_t len = align_to(profile_encrypted.len, key.len);
+  Byte_Buffer buff = ALLOC(alloc, len);
+
+  return decode_aes_128_ecb(buff, key, profile_encrypted, false);
 }
 
 int main(void) {
@@ -972,7 +1016,7 @@ int main(void) {
 
       Byte_Buffer bytes = hex_to_bytes(alloc, cursor);
 
-      HashSet* set = hashset_create(alloc, 256, hash_blob, eq_blob, NULL);
+      HashSet* set = hashset_create(alloc, 256, hash_blob, equal_blob, NULL);
 
       for (size_t i = 0; i < bytes.len; i += 16) {
         hashset_put(set, byte_buffer_slice(bytes, i, 16));
@@ -1081,6 +1125,7 @@ int main(void) {
 
       encoding_buffer = encode_aes_128_ecb_buffer(alloc, data.len);
       encoded = encode_aes_128_ecb(encoding_buffer, random_key, data, true);
+      assert(encoded.len != 0);
     }
 
     const char* inferred_mode = detect_encoding(alloc, encoded, 16);
@@ -1113,6 +1158,7 @@ int main(void) {
 
     memcpy(input_data.ptr, unknown_bytes.ptr, unknown_bytes.len);
     size_t initial_len = encode_aes_128_ecb(target_buffer, key, byte_buffer_slice(input_data, 0, unknown_bytes.len), true).len;
+    assert(initial_len != 0);
 
     size_t block_size = 0;
 
@@ -1121,6 +1167,7 @@ int main(void) {
       memset(input_data.ptr, 'A', i);
       memcpy(input_data.ptr+i, unknown_bytes.ptr, unknown_bytes.len);
       size_t new_len = encode_aes_128_ecb(target_buffer, key, byte_buffer_slice(input_data, 0, i + unknown_bytes.len), true).len;
+      assert(new_len != 0);
 
       if (new_len > initial_len) {
         block_size = new_len - initial_len;
@@ -1137,11 +1184,9 @@ int main(void) {
 
       memset(input_data.ptr, 'A', padding_len);
       memcpy(input_data.ptr + padding_len, unknown_bytes.ptr, unknown_bytes.len);
-      Byte_Buffer target_block = byte_buffer_slice(
-          encode_aes_128_ecb(target_buffer, key, byte_buffer_slice(input_data, 0, padding_len + unknown_bytes.len), true),
-          block_index * block_size,
-          16
-      );
+      Byte_Buffer encoded = encode_aes_128_ecb(target_buffer, key, byte_buffer_slice(input_data, 0, padding_len + unknown_bytes.len), true);
+      assert(encoded.len != 0);
+      Byte_Buffer target_block = byte_buffer_slice(encoded, block_index * block_size, 16);
 
       memset(input_data.ptr, 'A', padding_len);
       memcpy(input_data.ptr + padding_len, decoded.ptr, i);
@@ -1159,11 +1204,8 @@ int main(void) {
 
         AT(input_data, padding_len + i) = test_ch;
 
-        Byte_Buffer test_block = byte_buffer_slice(
-            encode_aes_128_ecb(test_buffer, key, byte_buffer_slice(input_data, 0, input_len), true),
-            block_index * block_size,
-            16
-        );
+        Byte_Buffer encoded = encode_aes_128_ecb(test_buffer, key, byte_buffer_slice(input_data, 0, input_len), true);
+        Byte_Buffer test_block = byte_buffer_slice(encoded, block_index * block_size, 16);
 
         if (memcmp(target_block.ptr, test_block.ptr, 16) == 0) {
           AT(decoded, i) = test_ch;
@@ -1193,6 +1235,34 @@ int main(void) {
     FREE(alloc, key);
     FREE(alloc, unknown_bytes);
     FREE(alloc, unknown_base64);
+  }
+
+  RESTORE(alloc, 0);
+
+  // challenge 13
+  {
+    Byte_Buffer key = byte_buffer_random(alloc, 16);
+
+    Byte_Buffer admin = for_profile(alloc, "..........admin...........");
+    Byte_Buffer user =  for_profile(alloc, "user@user.com");
+
+    assert(strncmp(admin.cptr, "email=..........admin...........&uid=10&role=user", 49) == 0);
+    assert(strncmp(user.cptr,  "email=user@user.com&uid=10&role=user", 36) == 0);
+
+    Byte_Buffer user_encoded = encrypt_profile(alloc, key, user);
+    Byte_Buffer admin_encoded = encrypt_profile(alloc, key, admin);
+
+    memcpy(user_encoded.ptr+32, admin_encoded.ptr+16, 16);
+
+    Byte_Buffer hacked = decrypt_profile(alloc, key, user_encoded);
+    assert(strncmp(hacked.cptr, "email=user@user.com&uid=10&role=admin...........", 36) == 0);
+
+    FREE(alloc, hacked);
+    FREE(alloc, admin_encoded);
+    FREE(alloc, user_encoded);
+    FREE(alloc, user);
+    FREE(alloc, admin);
+    FREE(alloc, key);
   }
 
   ARENA_DESTROY(&mallocator.alloc, &arena);

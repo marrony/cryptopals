@@ -51,7 +51,7 @@ bool byte_buffer_empty(Byte_Buffer buffer) {
   return buffer.ptr == NULL && buffer.len == 0;
 }
 
-bool byte_buffer_line(Byte_Buffer content, Byte_Buffer* cursor) {
+bool byte_buffer_split(Byte_Buffer content, Byte_Buffer* cursor, bool (*predicate)(int)) {
   if (byte_buffer_empty(*cursor)) {
     cursor->ptr = content.ptr;
     cursor->len = 0;
@@ -67,19 +67,27 @@ bool byte_buffer_line(Byte_Buffer content, Byte_Buffer* cursor) {
 
   if (start >= content.len) return false;
 
-  while (start < content.len && (content.ptr[start] == '\n' || content.ptr[start] == '\r'))
+  while (start < content.len && predicate(content.ptr[start]))
     start += 1;
 
   cursor->ptr = content.ptr + start;
 
   size_t end = start;
 
-  while (end < content.len && !(content.ptr[end] == '\n' || content.ptr[end] == '\r'))
+  while (end < content.len && !predicate(content.ptr[end]))
     end += 1;
 
   cursor->len = end - start;
 
   return end > start && end <= content.len;
+}
+
+bool byte_buffer_is_line_break(int ch) {
+  return ch == '\n' || ch == '\r';
+}
+
+bool byte_buffer_line(Byte_Buffer content, Byte_Buffer* cursor) {
+  return byte_buffer_split(content, cursor, byte_buffer_is_line_break);
 }
 
 #endif // BYTEBUFFER_H

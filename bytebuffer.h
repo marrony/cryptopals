@@ -20,7 +20,7 @@ typedef struct {
 #define EMPTY_BYTE_BUFFER (Byte_Buffer) { .ptr = NULL, .len = 0 }
 
 Byte_Buffer byte_buffer_slice(Byte_Buffer buffer, size_t offset, size_t len) {
-  assert(offset < buffer.len);
+  assert(offset <= buffer.len);
 
   size_t end = offset + len;
   if (end > buffer.len) {
@@ -88,6 +88,16 @@ bool byte_buffer_is_line_break(int ch) {
 
 bool byte_buffer_line(Byte_Buffer content, Byte_Buffer* cursor) {
   return byte_buffer_split(content, cursor, byte_buffer_is_line_break);
+}
+
+Byte_Buffer byte_buffer_memset(Byte_Buffer buffer, int b) {
+  memset(buffer.ptr, b, buffer.len);
+  return buffer;
+}
+
+Byte_Buffer byte_buffer_copy(Byte_Buffer dst, Byte_Buffer src) {
+  memcpy(dst.ptr, src.ptr, dst.len < src.len ? dst.len : src.len);
+  return dst;
 }
 
 #endif // BYTEBUFFER_H

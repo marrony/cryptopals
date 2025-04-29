@@ -30,7 +30,24 @@ typedef struct {
   HashSet_Free_Fn free_key;
 } HashSet;
 
-HashSet* hashset_create(Allocator* alloc, size_t capacity, HashSet_Hash_Fn hash_key, HashSet_Equal_Fn equal_key, HashSet_Free_Fn free_key) {
+HashSet* hashset_create(Allocator* alloc, size_t capacity, HashSet_Hash_Fn hash_key,
+    HashSet_Equal_Fn equal_key, HashSet_Free_Fn free_key);
+void hashset_destroy(HashSet* hashset);
+size_t hashset_probe_index(size_t hash, size_t i, size_t capacity);
+bool hashset_put(HashSet* hashset, Byte_Buffer key);
+bool hashset_contains(HashSet* hashset, Byte_Buffer key);
+bool hashset_remove(HashSet* hashset, Byte_Buffer key);
+bool hashset_resize(HashSet* hashset, size_t new_capacity);
+
+#endif // HASHSET_H
+
+#ifdef HASHSET_IMPLMENTATION
+
+#ifndef HASHSET_IMPLMENTATION_C
+#define HASHSET_IMPLMENTATION_C
+
+HashSet* hashset_create(Allocator* alloc, size_t capacity, HashSet_Hash_Fn hash_key,
+    HashSet_Equal_Fn equal_key, HashSet_Free_Fn free_key) {
   Byte_Buffer hashset_buffer = ALLOC(alloc, sizeof(HashSet));
   Byte_Buffer table_buffer = ALLOC(alloc, capacity * sizeof(HashSet_Entry));
 
@@ -68,8 +85,6 @@ void hashset_destroy(HashSet* hashset) {
 size_t hashset_probe_index(size_t hash, size_t i, size_t capacity) {
   return (hash + i) % capacity;
 }
-
-bool hashset_resize(HashSet* hashset, size_t new_capacity);
 
 bool hashset_put(HashSet* hashset, Byte_Buffer key) {
   float factor = (float)(hashset->size + 1) / (float)hashset->capacity;
@@ -167,4 +182,6 @@ bool hashset_resize(HashSet* hashset, size_t new_capacity) {
   return true;
 }
 
-#endif // HASHSET_H
+#endif // HASHSET_IMPLMENTATION_C
+
+#endif // HASHSET_IMPLMENTATION

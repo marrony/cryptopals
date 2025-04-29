@@ -12,274 +12,12 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 
+#define ALLOCATOR_IMPLEMENATION
 #include "allocator.h"
+#define BYTEBUFFER_IMPLEMENTATION
 #include "bytebuffer.h"
+#define HASHSET_IMPLMENTATION
 #include "hashset.h"
-
-size_t rand_between(size_t start, size_t end) {
-  return rand() % (end - start + 1) + start;
-}
-
-Byte_Buffer from_cstring(Allocator* alloc, const char* cstr) {
-  size_t length = strlen(cstr);
-
-  Byte_Buffer buffer = ALLOC(alloc, length);
-
-  if (buffer.ptr != NULL) {
-    strncpy(buffer.cptr, cstr, length);
-  }
-
-  return buffer;
-}
-
-Byte_Buffer byte_buffer_filled(Allocator* alloc, size_t size, uint8_t byte) {
-  Byte_Buffer bytes = ALLOC(alloc, size);
-  memset(bytes.ptr, byte, size);
-  return bytes;
-}
-
-Byte_Buffer byte_buffer_concat(Allocator* alloc, Byte_Buffer a, Byte_Buffer b) {
-  Byte_Buffer data = ALLOC(alloc, a.len + b.len);
-  memcpy(data.ptr, a.ptr, a.len);
-  memcpy(data.ptr+a.len, b.ptr, b.len);
-  return data;
-}
-
-Byte_Buffer byte_buffer_random(Allocator* alloc, size_t size) {
-  Byte_Buffer bytes = ALLOC(alloc, size);
-  for (size_t i = 0; i < size; i++)
-    AT(bytes, i) = rand_between(0, 255);
-  return bytes;
-}
-
-#define FROM_HEX(ch) (((ch) >= 'a' ? (ch) - 'a' + 10 : (ch) - '0') & 0x0f)
-#define TO_HEX(ch)   ((ch) >= 10 ? ((ch) - 10 + 'a') : ((ch) + '0'))
-
-Byte_Buffer hex_to_bytes(Allocator* alloc, Byte_Buffer hex) {
-  size_t size = hex.len / 2;
-
-  Byte_Buffer buffer = ALLOC(alloc, size);
-  if (buffer.ptr != NULL) {
-    size_t out_size = 0;
-
-    for (size_t i = 0; i < hex.len - 1; i += 2) {
-      char ch_hi = FROM_HEX(AT(hex, i+0));
-      char ch_lo = FROM_HEX(AT(hex, i+1));
-
-      AT(buffer, out_size++) = (ch_hi << 4) | ch_lo;
-    }
-  }
-
-  return buffer;
-}
-
-Byte_Buffer bytes_to_hex(Allocator* alloc, Byte_Buffer bytes) {
-  Byte_Buffer buffer = ALLOC(alloc, bytes.len*2);
-
-  if (buffer.ptr != NULL) {
-    size_t out_size = 0;
-
-    for (size_t i = 0; i < bytes.len; i++) {
-      char ch_hi = AT(bytes, i) >> 4;
-      char ch_lo = AT(bytes, i) & 0xf;
-
-      AT(buffer, out_size++) = TO_HEX(ch_hi);
-      AT(buffer, out_size++) = TO_HEX(ch_lo);
-    }
-  }
-
-  return buffer;
-}
-
-const char base64_encode[64] = {
-  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
-  'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-  'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-  'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-  '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '+', '/'
-};
-
-const char base64_encode_url[64] = {
-  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M',
-  'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-  'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
-  'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-  '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '-', '_'
-};
-
-// |xxxxxxyy|yyyyzzzz|zzwwwwww|
-Byte_Buffer bytes_to_base64(Allocator* alloc, Byte_Buffer bytes, bool padding) {
-  size_t bits_len = bytes.len * 8;
-  size_t base64_len = (bits_len + 5) / 6;
-
-  size_t padding_len = padding ? base64_len % 4 : 0;
-
-  Byte_Buffer base64 = ALLOC(alloc, base64_len + padding_len);
-  if (base64.ptr != NULL) {
-    size_t out_size = 0;
-
-    for (size_t in = 0; in < bytes.len - 2; in += 3) {
-      unsigned char b0 = AT(bytes, in+0);
-      unsigned char b1 = AT(bytes, in+1);
-      unsigned char b2 = AT(bytes, in+2);
-
-      unsigned int bits = ((unsigned int)b0 << 16) | ((unsigned int)b1 << 8) | (unsigned int)b2;
-
-      AT(base64, out_size++) = base64_encode[(bits >> 18) & 0x3f];
-      AT(base64, out_size++) = base64_encode[(bits >> 12) & 0x3f];
-      AT(base64, out_size++) = base64_encode[(bits >> 6) & 0x3f];
-      AT(base64, out_size++) = base64_encode[bits & 0x3f];
-    }
-
-    if (bytes.len % 3 == 2) {
-      unsigned char b0 = AT(bytes, bytes.len - 2);
-      unsigned char b1 = AT(bytes, bytes.len - 1);
-
-      unsigned int bits = ((unsigned int)b0 << 16) | ((unsigned int)b1 << 8);
-
-      AT(base64, out_size++) = base64_encode[(bits >> 18) & 0x3f];
-      AT(base64, out_size++) = base64_encode[(bits >> 12) & 0x3f];
-      //AT(base64, out_size++) = base64_encode[(bits >> 6) & 0x3f];
-    }
-
-    if (bytes.len % 3 == 1) {
-      unsigned char b0 = AT(bytes, bytes.len - 1);
-
-      unsigned int bits = (unsigned int)b0 << 16;
-
-      AT(base64, out_size++) = base64_encode[(bits >> 18) & 0x3f];
-      AT(base64, out_size++) = base64_encode[(bits >> 12) & 0x3f];
-    }
-
-    for (size_t i = 0; i < padding_len; i++)
-      AT(base64, out_size++) = '=';
-
-    assert(out_size == base64_len+padding_len);
-  }
-
-  return base64;
-}
-
-const char base64_decode[256] = {
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1, -1, 63,
-  52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -2, -1, -1,
-  -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
-  15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1, -1, -1,
-  -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-  41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-};
-
-const char base64_decode_url[256] = {
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1,
-  52, 53, 54, 55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -2, -1, -1,
-  -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
-  15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, -1, -1, -1, -1, 63,
-  -1, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
-  41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-  -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-};
-
-// |xxxxxxyy|yyyyzzzz|zzwwwwww|
-Byte_Buffer base64_to_bytes(Allocator* alloc, Byte_Buffer base64) {
-  if (base64.ptr == NULL)
-    return EMPTY_BYTE_BUFFER;
-
-  size_t in_size = base64.len;
-
-  while (in_size > 0 && AT(base64, in_size - 1) == '=')
-    in_size--;
-
-  size_t out_size = in_size * 6 / 8;
-  Byte_Buffer bytes = ALLOC(alloc, out_size);
-
-  size_t base64_index = 0;
-  size_t bytes_index = 0;
-
-  while (base64_index+3 < in_size) {
-    int i0 = base64_decode[(int)AT(base64, base64_index++)];
-    int i1 = base64_decode[(int)AT(base64, base64_index++)];
-    int i2 = base64_decode[(int)AT(base64, base64_index++)];
-    int i3 = base64_decode[(int)AT(base64, base64_index++)];
-
-    int bits = (i0 << 18) | (i1 << 12) | (i2 << 6) | (i3 << 0);
-
-    AT(bytes, bytes_index++) = (bits >> 16) & 0xff;
-    AT(bytes, bytes_index++) = (bits >> 8) & 0xff;
-    AT(bytes, bytes_index++) = (bits >> 0) & 0xff;
-  }
-
-  size_t diff = in_size - base64_index;
-
-  if (diff == 3) {
-    // |xxxxxxyy|yyyyzzzz|zz000000|
-    int i0 = base64_decode[(int)AT(base64, base64_index+0)];
-    int i1 = base64_decode[(int)AT(base64, base64_index+1)];
-    int i2 = base64_decode[(int)AT(base64, base64_index+2)];
-
-    int bits = (i0 << 18) | (i1 << 12) | (i2 << 6);
-    
-    AT(bytes, bytes_index++) = (bits >> 16) & 0xff;
-    AT(bytes, bytes_index++) = (bits >> 8) & 0xff;
-  }
-
-  if (diff == 2) {
-    // |xxxxxxyy|yyyy0000|00000000|
-    int i0 = base64_decode[(int)AT(base64, base64_index+0)];
-    int i1 = base64_decode[(int)AT(base64, base64_index+1)];
-
-    int bits = (i0 << 18) | (i1 << 12);
-
-    AT(bytes, bytes_index++) = (bits >> 16) & 0xff;
-  }
-
-  if (diff == 1) {
-    // |xxxxxx00|00000000|00000000|
-    int i0 = base64_decode[(int)AT(base64, base64_index)];
-
-    int bits = (i0 << 18);
-
-    AT(bytes, bytes_index++) = (bits >> 16) & 0xff;
-  }
-
-  return bytes;
-}
-
-Byte_Buffer remove_line_breaks(Byte_Buffer content) {
-  if (content.ptr == NULL)
-    return EMPTY_BYTE_BUFFER;
-
-  char* end = content.cptr + content.len;
-
-  char* src = content.cptr;
-  char* dst = content.cptr;
-
-  while (src < end && *src) {
-    if (!isspace(*src)) *dst++ = *src;
-    // if (*src != '\n' && *src != '\r') *dst++ = *src;
-    src++;
-  }
-
-  return byte_buffer_slice(content, 0, dst - content.cptr);
-}
 
 Byte_Buffer fixed_xor(Allocator* alloc, Byte_Buffer bytes0, Byte_Buffer bytes1) {
   if (bytes0.len != bytes1.len)
@@ -381,27 +119,6 @@ int hamming_distance(Byte_Buffer str0, Byte_Buffer str1) {
   }
 
   return count;
-}
-
-Byte_Buffer read_entire_file(Allocator* alloc, const char* file_name) {
-    FILE* fp = fopen(file_name, "r");
-    fseek(fp, 0, SEEK_END);
-    size_t file_size = ftell(fp);
-    fseek(fp, 0, SEEK_SET);
-
-    Byte_Buffer buffer = ALLOC(alloc, file_size);
-    if (buffer.ptr == NULL)
-      goto error;
-
-    if (fread(buffer.ptr, sizeof(char), file_size, fp) != file_size)
-      goto error;
-
-    fclose(fp);
-    return buffer;
-
-error:
-    fclose(fp);
-    return EMPTY_BYTE_BUFFER;
 }
 
 Byte_Buffer encode_aes_128_ecb_buffer(Allocator* alloc, size_t data_len) {
@@ -723,15 +440,33 @@ const char* detect_encoding(Allocator* alloc, Byte_Buffer encoded, size_t block_
   return inferred_mode;
 }
 
+const char challenge_12_unknown_bytes_array[] =
+  "Rollin' in my 5.0\n"
+  "With my rag-top down so my hair can blow\n"
+  "The girlies on standby waving just to say hi\n"
+  "Did you stop? No, I just drove by\n";
+
+const char challenge_12_unknown_key_array[16] = {
+  0x0, 0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7,
+  0x8, 0x9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf,
+};
+
+const Byte_Buffer challenge_12_unknown_bytes = {
+  .cptr = (char*)challenge_12_unknown_bytes_array,
+  .len = sizeof(challenge_12_unknown_bytes_array) - 1,
+};
+
+const Byte_Buffer challenge_12_unknown_key = {
+  .cptr = (char*)challenge_12_unknown_key_array,
+  .len = 16,
+};
 
 // AES-128-ECB('A' * padding_len + decoded + unknown-bytes, random-key)
 Byte_Buffer oracle_challange_12(
     Byte_Buffer output_buffer,
     Byte_Buffer input_buffer,
     size_t padding_len,
-    Byte_Buffer decoded,
-    Byte_Buffer unknown_bytes,
-    Byte_Buffer random_key) {
+    Byte_Buffer decoded) {
 
   byte_buffer_memset(byte_buffer_slice(input_buffer, 0, padding_len), 'A');
   byte_buffer_copy(
@@ -741,16 +476,16 @@ Byte_Buffer oracle_challange_12(
 
   size_t input_len = padding_len + decoded.len;
   size_t rem_len = input_buffer.len - input_len;
-  size_t copy_len = rem_len < unknown_bytes.len ? rem_len : unknown_bytes.len;
+  size_t copy_len = rem_len < challenge_12_unknown_bytes.len ? rem_len : challenge_12_unknown_bytes.len;
   byte_buffer_copy(
       byte_buffer_slice(input_buffer, input_len, copy_len),
-      byte_buffer_slice(unknown_bytes, 0, copy_len)
+      byte_buffer_slice(challenge_12_unknown_bytes, 0, copy_len)
   );
   input_len += copy_len;
 
   return encode_aes_128_ecb(
       output_buffer,
-      random_key,
+      challenge_12_unknown_key,
       byte_buffer_slice(input_buffer, 0, input_len),
       true
   );
@@ -1178,41 +913,29 @@ int main(void) {
   {
     srand(69);
 
-    Byte_Buffer unknown_base64 = from_cstring(alloc, "Um9sbGluJyBpbiBteSA1LjAKV2l0aCBteSByYWctdG9wIGRvd24gc28gbXkg"
-                                                     "aGFpciBjYW4gYmxvdwpUaGUgZ2lybGllcyBvbiBzdGFuZGJ5IHdhdmluZyBq"
-                                                     "dXN0IHRvIHNheSBoaQpEaWQgeW91IHN0b3A/IE5vLCBJIGp1c3QgZHJvdmUg"
-                                                     "YnkK");
-    Byte_Buffer unknown_bytes = base64_to_bytes(alloc, unknown_base64);
-
-    Byte_Buffer random_key = byte_buffer_random(alloc, 16);
-    Byte_Buffer input_data = byte_buffer_filled(alloc, unknown_bytes.len * 2, 0);
+    Byte_Buffer input_data = byte_buffer_filled(alloc, 256, 0);
     Byte_Buffer target_buffer = encode_aes_128_ecb_buffer(alloc, input_data.len);
     Byte_Buffer test_buffer = encode_aes_128_ecb_buffer(alloc, input_data.len);
-    Byte_Buffer decoded = byte_buffer_filled(alloc, unknown_bytes.len, 0);
+    Byte_Buffer decoded = byte_buffer_filled(alloc, 256, 0);
 
     // AES-128-ECB(unknown-bytes, random-key)
-    byte_buffer_copy(input_data, unknown_bytes);
     size_t initial_len = oracle_challange_12(
         target_buffer,
         input_data,
         0,
-        EMPTY_BYTE_BUFFER,
-        unknown_bytes,
-        random_key
+        EMPTY_BYTE_BUFFER
     ).len;
     assert(initial_len != 0);
 
     size_t block_size = 0;
 
-    for (size_t input_index = 0; input_index < unknown_bytes.len; input_index++) {
+    for (size_t input_index = 0; input_index < input_data.len; input_index++) {
       // AES-128-ECB(N * 'A' + unknown-bytes, random-key)
       size_t new_len = oracle_challange_12(
           target_buffer,
           input_data,
           input_index,
-          EMPTY_BYTE_BUFFER,
-          unknown_bytes,
-          random_key
+          EMPTY_BYTE_BUFFER
       ).len;
       assert(new_len != 0);
 
@@ -1224,7 +947,8 @@ int main(void) {
 
     assert(block_size == 16);
 
-    for (size_t input_index = 0; input_index < unknown_bytes.len; input_index++) {
+    size_t decoded_len = 0;
+    for (size_t input_index = 0; input_index < input_data.len; input_index++) {
       size_t padding_len = block_size - (input_index % block_size) - 1;
       size_t block_index = input_index / block_size;
 
@@ -1233,9 +957,7 @@ int main(void) {
           target_buffer,
           input_data,
           padding_len,
-          EMPTY_BYTE_BUFFER,
-          unknown_bytes,
-          random_key
+          EMPTY_BYTE_BUFFER
       );
       assert(encoded.len != 0);
 
@@ -1251,41 +973,32 @@ int main(void) {
             test_buffer,
             input_data,
             padding_len,
-            byte_buffer_slice(decoded, 0, input_index+1),
-            unknown_bytes,
-            random_key
+            byte_buffer_slice(decoded, 0, input_index+1)
         );
         assert(encoded.len != 0);
 
         Byte_Buffer test_block = byte_buffer_slice(encoded, block_index * block_size, 16);
 
         if (byte_buffer_cmp(target_block, test_block) == 0) {
-          AT(decoded, input_index) = test_ch;
+          decoded_len = input_index;
           found = true;
           break;
         }
       }
 
-      assert(found);
+      if(!found) break;
     }
 
-    assert(byte_buffer_cmp(decoded, unknown_bytes) == 0);
-
-    assert(byte_buffer_strcmp(
-          decoded,
-          "Rollin' in my 5.0\n"
-          "With my rag-top down so my hair can blow\n"
-          "The girlies on standby waving just to say hi\n"
-          "Did you stop? No, I just drove by\n") == 0
+    assert(decoded_len == 138);
+    assert(byte_buffer_cmp(
+          byte_buffer_slice(decoded, 0, decoded_len),
+          challenge_12_unknown_bytes) == 0
     );
 
     FREE(alloc, decoded);
     FREE(alloc, test_buffer);
     FREE(alloc, target_buffer);
     FREE(alloc, input_data);
-    FREE(alloc, random_key);
-    FREE(alloc, unknown_bytes);
-    FREE(alloc, unknown_base64);
   }
 
   RESTORE(alloc, 0);
@@ -1317,6 +1030,15 @@ int main(void) {
     FREE(alloc, user);
     FREE(alloc, admin);
     FREE(alloc, key);
+  }
+
+  RESTORE(alloc, 0);
+
+  // challenge 14
+  {
+    // AES-128-ECB('A' * padding_len + decoded + unknown-bytes, random-key)
+    //
+    //AES-128-ECB(random-prefix || attacker-controlled || target-bytes, random-key)
   }
 
   ARENA_DESTROY(&mallocator.alloc, &arena);

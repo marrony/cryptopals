@@ -40,6 +40,54 @@ typedef struct Malloc_Entry {
   size_t line;
 } Malloc_Entry;
 
+#define MALLOC_CREATE() (Malloc_Allocator) { \
+  .alloc = {                                 \
+    .alloc = (Alloc_Fn)malloc_alloc,         \
+    .free = (Free_Fn)malloc_free,            \
+    .save = (Save_Fn)malloc_save,            \
+    .restore = (Restore_Fn)malloc_restore,   \
+  },                                         \
+  .allocated = 0,                            \
+}
+
+Byte_Buffer malloc_alloc(Malloc_Allocator* alloc, size_t nbytes, const char* file, size_t line);
+void malloc_free(Malloc_Allocator* alloc, Byte_Buffer buffer, const char* file, size_t line);
+size_t malloc_save(Malloc_Allocator* alloc, const char* file, size_t line);
+void malloc_restore(Malloc_Allocator* alloc, size_t allocated, const char* file, size_t line);
+
+typedef struct Arena_Allocator {
+  Allocator alloc;
+  Byte_Buffer buffer;
+  size_t allocated;
+} Arena_Allocator;
+
+#define ARENA_CREATE(a, s) (Arena_Allocator) { \
+  .alloc = {                                   \
+    .alloc = (Alloc_Fn)arena_alloc,            \
+    .free = (Free_Fn)arena_free,               \
+    .save = (Save_Fn)arena_save,               \
+    .restore = (Restore_Fn)arena_restore,      \
+  },                                           \
+  .buffer = ALLOC((a), (s)),                   \
+  .allocated = 0,                              \
+}
+
+#define ARENA_DESTROY(alloc, arena) FREE((alloc), (arena)->buffer)
+
+Byte_Buffer arena_alloc(Arena_Allocator* alloc, size_t nbytes, const char* file, size_t line);
+void arena_free(Arena_Allocator* alloc, Byte_Buffer buffer, const char* file, size_t line);
+size_t arena_save(Arena_Allocator* alloc, const char* file, size_t line);
+void arena_restore(Arena_Allocator* alloc, size_t allocated, const char* file, size_t line);
+
+#endif // ALLOCATOR_H
+
+#ifdef ALLOCATOR_IMPLEMENATION
+
+#ifndef ALLOCATOR_IMPLEMENATION_C
+#define ALLOCATOR_IMPLEMENATION_C
+
+#include "bytebuffer.h"
+
 Byte_Buffer malloc_alloc(Malloc_Allocator* alloc, size_t nbytes, const char* file, size_t line) {
   (void)file;
   (void)line;
@@ -95,12 +143,6 @@ void malloc_restore(Malloc_Allocator* alloc, size_t allocated, const char* file,
   (void)line;
 }
 
-typedef struct Arena_Allocator {
-  Allocator alloc;
-  Byte_Buffer buffer;
-  size_t allocated;
-} Arena_Allocator;
-
 Byte_Buffer arena_alloc(Arena_Allocator* alloc, size_t nbytes, const char* file, size_t line) {
   (void)file;
   (void)line;
@@ -138,27 +180,6 @@ void arena_restore(Arena_Allocator* alloc, size_t allocated, const char* file, s
   alloc->allocated = allocated;
 }
 
-#define MALLOC_CREATE() (Malloc_Allocator) { \
-  .alloc = {                                 \
-    .alloc = (Alloc_Fn)malloc_alloc,         \
-    .free = (Free_Fn)malloc_free,            \
-    .save = (Save_Fn)malloc_save,            \
-    .restore = (Restore_Fn)malloc_restore,   \
-  },                                         \
-  .allocated = 0,                            \
-}
+#endif // ALLOCATOR_IMPLEMENATION_C
 
-#define ARENA_CREATE(a, s) (Arena_Allocator) { \
-  .alloc = {                                   \
-    .alloc = (Alloc_Fn)arena_alloc,            \
-    .free = (Free_Fn)arena_free,               \
-    .save = (Save_Fn)arena_save,               \
-    .restore = (Restore_Fn)arena_restore,      \
-  },                                           \
-  .buffer = ALLOC((a), (s)),                   \
-  .allocated = 0,                              \
-}
-
-#define ARENA_DESTROY(alloc, arena) FREE((alloc), (arena)->buffer)
-
-#endif // ALLOCATOR_H
+#endif // ALLOCATOR_IMPLEMENATION

@@ -33,7 +33,25 @@ typedef struct {
   HashMap_Free_Fn free_value;
 } HashMap;
 
-HashMap* hashmap_create(Allocator* alloc, size_t capacity, HashMap_Hash_Fn hash_key, HashMap_Equal_Fn equal_key, HashMap_Free_Fn free_key, HashMap_Free_Fn free_value) {
+HashMap* hashmap_create(Allocator* alloc, size_t capacity, HashMap_Hash_Fn hash_key,
+    HashMap_Equal_Fn equal_key, HashMap_Free_Fn free_key, HashMap_Free_Fn free_value);
+void hashmap_destroy(HashMap* hashmap);
+size_t hashmap_probe_index(size_t hash, size_t i, size_t capacity);
+bool hashmap_put(HashMap* hashmap, Byte_Buffer key, Byte_Buffer value);
+Byte_Buffer hashmap_get(HashMap* hashmap, Byte_Buffer key);
+bool hashmap_contains(HashMap* hashmap, Byte_Buffer key);
+bool hashmap_remove(HashMap* hashmap, Byte_Buffer key);
+bool hashmap_resize(HashMap* hashmap, size_t new_capacity);
+
+#endif // HASHMAP_H
+
+#ifdef HASHMAP_IMPLMENTATION
+
+#ifndef HASHMAP_IMPLMENTATION_C
+#define HASHMAP_IMPLMENTATION_C
+
+HashMap* hashmap_create(Allocator* alloc, size_t capacity, HashMap_Hash_Fn hash_key,
+    HashMap_Equal_Fn equal_key, HashMap_Free_Fn free_key, HashMap_Free_Fn free_value) {
   Byte_Buffer hashmap_buffer = ALLOC(alloc, sizeof(HashMap));
   Byte_Buffer table_buffer = ALLOC(alloc, capacity * sizeof(HashMap_Entry));
 
@@ -186,4 +204,6 @@ bool hashmap_resize(HashMap* hashmap, size_t new_capacity) {
   return true;
 }
 
-#endif // HASHMAP_H
+#endif // HASHMAP_IMPLMENTATION_C
+
+#endif // HASHMAP_IMPLMENTATION
